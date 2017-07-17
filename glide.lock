@@ -1,5 +1,5 @@
-hash: 8357c46cce4711ecc057093611936de418f463289daf5c07be9b5b69c7e08c5c
-updated: 2017-03-19T16:19:21.368206909+05:00
+hash: 9db52eb11d5af8a8c6fc83e1316d0250f16e31429af61550512f7fb874e9d709
+updated: 2017-06-12T17:41:44.319463579+05:00
 imports:
 - name: github.com/1lann/go-sip
   version: 68e86c65407ef8cf672ae38526e7f3d29944b94f
@@ -41,6 +41,8 @@ imports:
   - tlsconfig
 - name: github.com/docker/go-units
   version: 0dadbb0345b35ec7ef35e228dabb8de89a65bf52
+- name: github.com/docopt/docopt-go
+  version: 784ddc588536785e7299f7272f39101f7faccc3f
 - name: github.com/fsnotify/fsnotify
   version: 7d7316ed6e1ed2de075aab8dfc76de5d158d66e1
 - name: github.com/google/gopacket
@@ -60,11 +62,11 @@ imports:
   - json/scanner
   - json/token
 - name: github.com/kung-foo/freki
-  version: b8cdce0aabd6d6aa3552467ebf83f5dafdf9d51c
+  version: b4042f6dd12c8d141636194fa79c028226ac3ec8
   subpackages:
   - netfilter
 - name: github.com/lunixbochs/vtclean
-  version: 4428d67a89b36ecae7998e983e5814d0d9c45a04
+  version: d14193dfc626125c831501c1c42340b4248e1f5a
 - name: github.com/magiconair/properties
   version: b3b15ef068fd0b17ddf408a23669f20811d194d2
 - name: github.com/Microsoft/go-winio
@@ -95,6 +97,19 @@ imports:
   version: 9ff6c6923cfffbcd502984b8e0c80539a94968b7
 - name: github.com/spf13/viper
   version: 7538d73b4eb9511d85a9f1dfef202eeb8ac260f4
+- name: github.com/Unknwon/com
+  version: 28b053d5a2923b87ce8c5a08f3af779894a72758
+- name: go.uber.org/atomic
+  version: 4e336646b2ef9fc6e47be8e21594178f98e5ebcf
+- name: go.uber.org/zap
+  version: 9cabc84638b70e564c3dab2766efcb1ded2aac9f
+  subpackages:
+  - buffer
+  - internal/bufferpool
+  - internal/color
+  - internal/exit
+  - internal/multierror
+  - zapcore
 - name: golang.org/x/crypto
   version: 40541ccb1c6e64c947ed6f606b8a6cb4b67d7436
   subpackages:

@@ -2,9 +2,10 @@ package glutton
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"net"
@@ -27,23 +28,23 @@ var miraiCom = map[string][]string{
 	"nc":   []string{"nc: command not found"},
 	"wget": []string{"wget: missing URL"},
 	"(dd bs=52 count=1 if=.s || cat .s)": []string{"\x7f\x45\x4c\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00\x01\x00\x00\x00\xbc\x14\x01\x00\x34\x00\x00\x00"},
-	"sh": []string{"$"},
-	"sh || shell": 					   []string{"$"},
-	"enable\x00":		   			   []string{"-bash: enable: command not found"},
-	"system\x00":		   			   []string{"-bash: system: command not found"},
-	"shell\x00":		   			   []string{"-bash: shell: command not found"},
-	"sh\x00":		   			   []string{"$"},
-//	"fgrep XDVR /mnt/mtd/dep2.sh\x00":		   []string{"cd /mnt/mtd && ./XDVRStart.hisi ./td3500 &"},
-	"busybox":					   []string{"BusyBox v1.16.1 (2014-03-04 16:00:18 CST) built-it shell (ash)\r\nEnter 'help' for a list of built-in commands.\r\n"},
+	"sh":          []string{"$"},
+	"sh || shell": []string{"$"},
+	"enable\x00":  []string{"-bash: enable: command not found"},
+	"system\x00":  []string{"-bash: system: command not found"},
+	"shell\x00":   []string{"-bash: shell: command not found"},
+	"sh\x00":      []string{"$"},
+	//	"fgrep XDVR /mnt/mtd/dep2.sh\x00":		   []string{"cd /mnt/mtd && ./XDVRStart.hisi ./td3500 &"},
+	"busybox": []string{"BusyBox v1.16.1 (2014-03-04 16:00:18 CST) built-it shell (ash)\r\nEnter 'help' for a list of built-in commands.\r\n"},
 	"echo -ne '\\x48\\x6f\\x6c\\x6c\\x61\\x46\\x6f\\x72\\x41\\x6c\\x6c\\x61\\x68\\x0a'\r\n": []string{"\x48\x6f\x6c\x6c\x61\x46\x6f\x72\x41\x6c\x6c\x61\x68\x0arn"},
-	"cat | sh":		   			   []string{""},
+	"cat | sh": []string{""},
 	"echo -e \\x6b\\x61\\x6d\\x69/dev > /dev/.nippon":              []string{""},
 	"cat /dev/.nippon":                                             []string{"kami/dev"},
 	"rm /dev/.nippon":                                              []string{""},
 	"echo -e \\x6b\\x61\\x6d\\x69/run > /run/.nippon":              []string{""},
 	"cat /run/.nippon":                                             []string{"kami/run"},
 	"rm /run/.nippon":                                              []string{""},
-	"cat /bin/sh":                                     		[]string{"\x7f\x45\x4c\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x28\x00\x01\x00\x00\x00\x98\x30\x00\x00\x34\x00\x00\x00"},
+	"cat /bin/sh":                                                  []string{"\x7f\x45\x4c\x46\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x28\x00\x01\x00\x00\x00\x98\x30\x00\x00\x34\x00\x00\x00"},
 	"/bin/busybox ps":                                              []string{"1 pts/21   00:00:00 init"},
 	"/bin/busybox cat /proc/mounts":                                []string{"tmpfs /run tmpfs rw,nosuid,noexec,relatime,size=3231524k,mode=755 0 0"},
 	"/bin/busybox echo -e \\x6b\\x61\\x6d\\x69/dev > /dev/.nippon": []string{""},
@@ -59,9 +60,11 @@ var miraiCom = map[string][]string{
 
 func writeMsg(conn net.Conn, msg string, g *Glutton) error {
 	_, err := conn.Write([]byte(msg))
-	g.logger.Infof("[telnet  ] send: %q", msg)
+	g.logger.Info(fmt.Sprintf("[telnet  ] send: %q", msg))
 	md := g.processor.Connections.GetByFlow(freki.NewConnKeyFromNetConn(conn))
-	g.producer.LogHTTP(conn, md, []byte(msg), "write")
+	if g.producer != nil && md != nil {
+		err = g.producer.LogHTTP(conn, md, []byte(msg), "write")
+	}
 	return err
 }
 
@@ -70,9 +73,11 @@ func readMsg(conn net.Conn, g *Glutton) (msg string, err error) {
 	if err != nil {
 		return "", err
 	}
-	g.logger.Infof("[telnet  ] recv: %q", msg)
+	g.logger.Info(fmt.Sprintf("[telnet  ] recv: %q", msg))
 	md := g.processor.Connections.GetByFlow(freki.NewConnKeyFromNetConn(conn))
-	g.producer.LogHTTP(conn, md, []byte(msg), "read")
+	if g.producer != nil && md != nil {
+		err = g.producer.LogHTTP(conn, md, []byte(msg), "read")
+	}
 	return msg, err
 }
 
@@ -83,27 +88,24 @@ func getSample(cmd string, g *Glutton) error {
 	client := http.Client{
 		Timeout: timeout,
 	}
-	g.logger.Infof("[telnet  ] getSample target URL: %s", url)
+	g.logger.Info(fmt.Sprintf("[telnet  ] getSample target URL: %s", url))
 	resp, err := client.Get(url)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] getSample http error: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample http error: %v", err))
 		return err
 	}
 	if resp.StatusCode != 200 {
-		err = errors.New("Non 200 status code on getSample")
-		g.logger.Errorf("[telnet  ] getSample read http: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample read http: %v, error: Non 200 status code on getSample"))
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.ContentLength <= 0 {
-		err = errors.New("Empty response body")
-		g.logger.Errorf("[telnet  ] getSample read http: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample read http: %v, error: Empty response body"))
 		return err
 	}
-	g.logger.Infof("[telnet  ] getSample body length: %d", resp.ContentLength)
 	bodyBuffer, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] getSample read http: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample read http: %v", err))
 		return err
 	}
 	sum := sha256.Sum256(bodyBuffer)
@@ -111,24 +113,34 @@ func getSample(cmd string, g *Glutton) error {
 	os.MkdirAll("samples", os.ModePerm)
 	sha256Hash := hex.EncodeToString(sum[:])
 	path := filepath.Join("samples", sha256Hash)
+	if _, err = os.Stat(path); err == nil {
+		g.logger.Info(fmt.Sprintf("[telnet  ] getSample already known"))
+		return nil
+	}
 	out, err := os.Create(path)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] getSample create error: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample create error: %v", err))
 		return err
 	}
 	defer out.Close()
 	_, err = out.Write(bodyBuffer)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] getSample write error: %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] getSample write error: %v", err))
 		return err
 	}
-	g.logger.Infof("[telnet  ] getSample succcess: %s", path)
+	g.logger.Info(fmt.Sprintf("[telnet  ] getSample new: %s", path))
 	return nil
 }
 
 // HandleTelnet handles telnet communication on a connection
-func (g *Glutton) HandleTelnet(conn net.Conn) {
-	defer conn.Close()
+func (g *Glutton) HandleTelnet(ctx context.Context, conn net.Conn) (err error) {
+	defer func() {
+		err = conn.Close()
+		if err != nil {
+			g.logger.Error(fmt.Sprintf("[telnet  ]  error: %v", err))
+			fmt.Println(fmt.Sprintf("[telnet  ]  error: %v", err))
+		}
+	}()
 
 	// TODO (glaslos): Add device banner
 
@@ -137,24 +149,26 @@ func (g *Glutton) HandleTelnet(conn net.Conn) {
 
 	// User name prompt
 	writeMsg(conn, "Username: ", g)
-	_, err := readMsg(conn, g)
+	_, err = readMsg(conn, g)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] error: %v", err))
 		return
 	}
 	writeMsg(conn, "Password: ", g)
 	_, err = readMsg(conn, g)
 	if err != nil {
-		g.logger.Errorf("[telnet  ] %v", err)
+		g.logger.Error(fmt.Sprintf("[telnet  ] error: %v", err))
 		return
 	}
 
 	writeMsg(conn, "welcome\r\n> ", g)
+
 	for {
+		g.updateConnectionTimeout(ctx, conn)
 		msg, err := readMsg(conn, g)
 		if err != nil {
-			g.logger.Errorf("[telnet  ] %v", err)
-			return
+			g.logger.Error(fmt.Sprintf("[telnet  ] error: %v", err))
+			return err
 		}
 		for _, cmd := range strings.Split(msg, ";") {
 			if strings.Contains(strings.Trim(cmd, " "), "wget http") {

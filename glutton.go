@@ -1,66 +1,90 @@
 package glutton
 
 import (
+	"context"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/kung-foo/freki"
+	"github.com/mushorg/glutton/config"
 	"github.com/mushorg/glutton/producer"
-	"github.com/pkg/errors"
 	uuid "github.com/satori/go.uuid"
 	"github.com/spf13/viper"
+	log "go.uber.org/zap"
 )
 
 // Glutton struct
 type Glutton struct {
 	id               uuid.UUID
 	conf             *viper.Viper
-	logger           freki.Logger
+	logger           *log.Logger
 	processor        *freki.Processor
 	rules            []*freki.Rule
 	producer         *producer.Config
 	protocolHandlers map[string]protocolHandlerFunc
 	sshProxy         *sshProxy
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
-type protocolHandlerFunc func(conn net.Conn)
+type protocolHandlerFunc func(ctx context.Context, conn net.Conn) error
 
 // New creates a new Glutton instance
-func New(iface string, conf *viper.Viper, logger freki.Logger) (*Glutton, error) {
-	rulesPath := conf.GetString("rules_path")
-	rulesFile, err := os.Open(rulesPath)
+func New(args map[string]interface{}) (*Glutton, error) {
+	var (
+		iface    string = args["--interface"].(string)
+		logPath         = args["--logpath"].(string)
+		confPath        = args["--confpath"].(string)
+		debug    bool   = args["--debug"].(bool)
+	)
+
+	gtn := &Glutton{}
+	err := gtn.makeID()
 	if err != nil {
-		// TODO formate error
+		return nil, err
+	}
+	if gtn.logger, err = initLogger(&logPath, gtn.id.String(), &debug); err != nil {
 		return nil, err
 	}
 
-	rules, err := freki.ReadRulesFromFile(rulesFile)
+	// Loading the congiguration
+	gtn.logger.Info("[glutton ] Loading configurations from: config/conf.yaml")
+	gtn.conf = config.Init(&confPath, gtn.logger)
+
+	rulesPath := gtn.conf.GetString("rules_path")
+	rulesFile, err := os.Open(rulesPath)
+	defer rulesFile.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	gtn.rules, err = freki.ReadRulesFromFile(rulesFile)
 	if err != nil {
 		return nil, err
 	}
 
 	// Initiate the freki processor
-	processor, err := freki.New(iface, rules, logger)
+	gtn.processor, err = freki.New(iface, gtn.rules, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	glutton := &Glutton{
-		conf:             conf,
-		logger:           logger,
-		processor:        processor,
-		rules:            rules,
-		protocolHandlers: make(map[string]protocolHandlerFunc, 0),
-	}
-
-	return glutton, nil
+	return gtn, nil
 
 }
 
 // Init initializes freki and handles
 func (g *Glutton) Init() (err error) {
+
+	ctx := context.Background()
+	g.ctx, g.cancel = context.WithCancel(ctx)
+
+	g.protocolHandlers = make(map[string]protocolHandlerFunc, 0)
+
 	tcpProxyPort := uint(g.conf.GetInt("proxy_tcp"))
 	gluttonServerPort := uint(g.conf.GetInt("glutton_server"))
 
@@ -68,15 +92,14 @@ func (g *Glutton) Init() (err error) {
 	g.processor.AddServer(freki.NewTCPProxy(tcpProxyPort))
 	// Initiating glutton server
 	g.processor.AddServer(freki.NewUserConnServer(gluttonServerPort))
-
-	g.makeID()
-	g.producer = producer.Init(g.id.String(), g.logger, g.conf.GetString("gollum"))
-
-	// TODO: in Freki updated version
-	// g.processor.GetPublicAddresses()
-
+	// Initiating log producer
+	if g.conf.GetBool("enableGollum") {
+		g.producer = producer.Init(g.id.String(), g.conf.GetString("gollumAddress"))
+	}
+	// Initiating protocol handlers
 	g.mapProtocolHandlers()
 	g.registerHandlers()
+
 	err = g.processor.Init()
 	if err != nil {
 		return
@@ -87,6 +110,14 @@ func (g *Glutton) Init() (err error) {
 
 // Start the packet processor
 func (g *Glutton) Start() (err error) {
+
+	quit := make(chan struct{}) // stop monitor on shutdown
+	defer func() {
+		quit <- struct{}{}
+		g.Shutdown()
+	}()
+
+	g.startMonitor(quit)
 	err = g.processor.Start()
 	return
 }
@@ -123,18 +154,17 @@ func (g *Glutton) makeID() error {
 
 // registerHandlers register protocol handlers to glutton_server
 func (g *Glutton) registerHandlers() {
-
 	for _, rule := range g.rules {
 		if rule.Type == "conn_handler" && rule.Target != "" {
 			protocol := rule.Target
 			if g.protocolHandlers[protocol] == nil {
-				g.logger.Errorf("[glutton ] No handler found for %v Protocol", protocol)
+				g.logger.Warn(fmt.Sprintf("[glutton ] no handler found for %v protocol", protocol))
 				continue
 			}
 			if protocol == "proxy_ssh" {
 				err := g.NewSSHProxy()
 				if err != nil {
-					g.logger.Error(errors.Wrap(formatErrorMsg("Failed to initialize SSH Proxy: ", err), "ssh.prxy"))
+					g.logger.Error(fmt.Sprintf("[ssh.prxy] failed to initialize SSH proxy"))
 					continue
 				}
 			}
@@ -142,23 +172,29 @@ func (g *Glutton) registerHandlers() {
 
 				host, port, err := net.SplitHostPort(conn.RemoteAddr().String())
 				if err != nil {
-					g.logger.Error(err)
-					return nil
+					return err
 				}
+
 				if md == nil {
-					g.logger.Debugf("[glutton ] connection not tracked: %s:%s", host, port)
+					g.logger.Debug(fmt.Sprintf("[glutton ] connection not tracked: %s:%s", host, port))
 					return nil
 				}
-				g.logger.Debugf("[glutton ] new connection: %s:%s -> %d", host, port, uint(md.TargetPort))
+				g.logger.Debug(fmt.Sprintf("[glutton ] new connection: %s:%s -> %d", host, port, md.TargetPort))
 
-				err = g.producer.LogHTTP(conn, md, nil, "")
-				if err != nil {
-					g.logger.Error(err)
+				if g.producer != nil {
+					err = g.producer.LogHTTP(conn, md, nil, "")
+					if err != nil {
+						g.logger.Error(fmt.Sprintf("[glutton ] error: %v", err))
+					}
 				}
 
-				protocolHandler := g.protocolHandlers[protocol]
-				go protocolHandler(conn)
-				return nil
+				done := make(chan struct{})
+				go g.closeOnShutdown(conn, done)
+				conn.SetDeadline(time.Now().Add(45 * time.Second))
+				ctx := g.contextWithTimeout(72)
+				err = g.protocolHandlers[protocol](ctx, conn)
+				done <- struct{}{}
+				return err
 			})
 		}
 	}
@@ -166,16 +202,30 @@ func (g *Glutton) registerHandlers() {
 
 // Shutdown the packet processor
 func (g *Glutton) Shutdown() (err error) {
+	defer g.logger.Sync()
+	g.cancel() // close all connection
+
+	/** TODO:
+	 ** May be there exist a better way to wait for all connections to be closed but I am unable
+	 ** to find. The only link we have between program and goroutines is context.
+	 ** context.cancel() signal routines to abandon their work and does not wait
+	 ** for the work to stop. And in any case if fails then there will be definitely a
+	 ** goroutine leak. May be it is possible in future when we have connection counter so we can keep
+	 ** that counter synchronized with number of goroutines (connections) with help of context and on
+	 ** shutdown we wait until counter goes to zero.
+	 */
+
+	time.Sleep(2 * time.Second)
 	return g.processor.Shutdown()
 }
 
 // OnErrorClose prints the error, closes the connection and exits
 func (g *Glutton) onErrorClose(err error, conn net.Conn) {
 	if err != nil {
-		g.logger.Error(err)
+		g.logger.Error(fmt.Sprintf("[glutton ] error: %v", err))
 		err = conn.Close()
 		if err != nil {
-			g.logger.Error(err)
+			g.logger.Error(fmt.Sprintf("[glutton ] error: %v", err))
 		}
 	}
 }

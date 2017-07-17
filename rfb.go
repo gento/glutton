@@ -3,6 +3,7 @@ package glutton
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -11,9 +12,9 @@ import (
 func readRFB(conn net.Conn, g *Glutton) {
 	msg, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
-		g.logger.Errorf("[rfb     ] error: %v", err)
+		g.logger.Error(fmt.Sprintf("[rfb     ] error: %v", err))
 	}
-	g.logger.Infof("[rfb     ] message %q", msg)
+	g.logger.Info(fmt.Sprintf("[rfb     ] message %q", msg))
 }
 
 // PixelFormat represents a RFB communication unit
@@ -28,8 +29,14 @@ type PixelFormat struct {
 }
 
 // HandleRFB takes a net.Conn and does basic RFB/VNC communication
-func (g *Glutton) HandleRFB(conn net.Conn) {
-	defer conn.Close()
+func (g *Glutton) HandleRFB(ctx context.Context, conn net.Conn) (err error) {
+	defer func() {
+		err = conn.Close()
+		if err != nil {
+			g.logger.Error(fmt.Sprintf("[rfb     ] error: %v", err))
+		}
+	}()
+
 	conn.Write([]byte("RFB 003.008\n"))
 	readRFB(conn, g)
 	var authNone uint32 = 1
@@ -56,10 +63,11 @@ func (g *Glutton) HandleRFB(conn net.Conn) {
 		BlueShift:        0,
 		ServerNameLength: lenName,
 	}
-	err := binary.Write(buf, binary.LittleEndian, f)
+	err = binary.Write(buf, binary.LittleEndian, f)
 	if err != nil {
-		fmt.Println("binary.Write failed:", err)
+		g.logger.Warn(fmt.Sprintf("[rfb     ] binary.Write failed, error: ", err))
 	}
 	conn.Write(buf.Bytes())
 	readRFB(conn, g)
+	return err
 }

@@ -2,18 +2,20 @@ package glutton
 
 import (
 	"errors"
+	"strconv"
+
 	"github.com/Unknwon/com"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-func initLogger(logPath *string, id string, debug *bool) (*zap.Logger, error) {
+func initLogger(logPath *string, id string, debug *string) (*zap.Logger, error) {
 
 	var cfg zap.Config
 	if !com.IsDir(*logPath) {
 		cfg = zap.NewProductionConfig()
-		cfg.ErrorOutputPaths = []string{*logPath}
-		cfg.OutputPaths = []string{*logPath + ".err"}
+		cfg.ErrorOutputPaths = []string{*logPath + ".err"}
+		cfg.OutputPaths = []string{*logPath}
 	} else {
 		err := errors.New("[glutton ] file name is missing in log path")
 		return nil, err
@@ -23,7 +25,11 @@ func initLogger(logPath *string, id string, debug *bool) (*zap.Logger, error) {
 		"sensorID": id,
 	}
 
-	if *debug {
+	checkDebug, err := strconv.ParseBool(*debug)
+	if err != nil {
+		return nil, err
+	}
+	if checkDebug {
 		cfg.Level.SetLevel(zapcore.DebugLevel)
 	}
 

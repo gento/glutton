@@ -39,6 +39,10 @@ func (g *Glutton) mapProtocolHandlers() {
 		return g.HandleRFB(ctx, conn)
 	}
 
+	g.protocolHandlers["proxy_tcp"] = func(ctx context.Context, conn net.Conn) (err error) {
+		return g.tcpProxy(ctx, conn)
+	}
+
 	g.protocolHandlers["telnet"] = func(ctx context.Context, conn net.Conn) (err error) {
 		return g.HandleTelnet(ctx, conn)
 	}
@@ -55,9 +59,8 @@ func (g *Glutton) mapProtocolHandlers() {
 		httpMap := map[string]bool{"GET ": true, "POST": true, "HEAD": true, "OPTI": true}
 		if _, ok := httpMap[strings.ToUpper(string(snip))]; ok == true {
 			return g.HandleHTTP(ctx, bufConn)
-		} else {
-			return g.HandleTCP(ctx, bufConn)
 		}
+		return g.HandleTCP(ctx, bufConn)
 	}
 }
 
